@@ -248,8 +248,11 @@ class Template(ProcessorMixin):
             if self.max_pixels is not None or inputs.objects:
                 load_images = True
             if images:
+                bbox = inputs.objects.get("bbox", None)
                 for i, image in enumerate(images):
                     images[i] = self._load_image(image, load_images)
+                    if bbox is not None:
+                        images[i] = images[i].crop(tuple(bbox[i]))
             if inputs.objects:
                 self._get_height_width(inputs)
             if self.max_pixels is not None and images:
