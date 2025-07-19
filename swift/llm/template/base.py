@@ -248,7 +248,7 @@ class Template(ProcessorMixin):
             if self.max_pixels is not None or inputs.objects:
                 load_images = True
             if images:
-                bbox = inputs.objects.get("bbox", None)
+                bbox = inputs.objects.pop("bbox", None)
                 for i, image in enumerate(images):
                     images[i] = self._load_image(image, load_images)
                     if bbox is not None:
