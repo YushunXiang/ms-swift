@@ -481,6 +481,145 @@ register_template(
         default_system='You are MiMo, an AI assistant developed by Xiaomi.'))
 
 
+class Qwen2_5VLOclTemplate(Qwen2_5VLTemplate):
+    """Template variant that accepts crop_bbox field to crop images before encoding."""
+
+    def _preprocess_inputs(self, inputs: StdTemplateInputs) -> None:
+        crop_bbox = inputs.extra_kwargs.pop('crop_bbox', None)
+        prepared = self._normalize_crop_bbox_list(crop_bbox, len(inputs.images))
+        if prepared is not None and any(bbox is not None for bbox in prepared):
+            self._crop_bbox_values = prepared
+            self._crop_bbox_index = 0
+        else:
+            self._crop_bbox_values = None
+            self._crop_bbox_index = 0
+        try:
+            super()._preprocess_inputs(inputs)
+        finally:
+            self._crop_bbox_values = None
+            self._crop_bbox_index = 0
+
+    @staticmethod
+    def _normalize_crop_value(value):
+        if value is None:
+            return None
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return None
+            stripped = stripped.strip('[]()')
+            tokens = [token for token in stripped.split(',') if token.strip()]
+            try:
+                value = [float(token) for token in tokens]
+            except ValueError:
+                return None
+        if isinstance(value, (list, tuple)):
+            value = list(value)
+            while len(value) == 1 and isinstance(value[0], (list, tuple)):
+                value = list(value[0])
+            if len(value) < 4:
+                return None
+            coords = []
+            for coord in value[:4]:
+                if isinstance(coord, (int, float)):
+                    coords.append(float(coord))
+                elif isinstance(coord, str):
+                    coord = coord.strip()
+                    if not coord:
+                        return None
+                    try:
+                        coords.append(float(coord))
+                    except ValueError:
+                        return None
+                else:
+                    return None
+            return coords
+        return None
+
+    def _convert_crop_bbox_entries(self, crop_bbox) -> List[Optional[List[float]]]:
+        if crop_bbox is None:
+            return []
+        if isinstance(crop_bbox, dict):
+            mapped: Dict[int, Optional[List[float]]] = {}
+            for key, value in crop_bbox.items():
+                try:
+                    idx = int(key)
+                except (TypeError, ValueError):
+                    continue
+                mapped[idx] = self._normalize_crop_value(value)
+            if not mapped:
+                return []
+            max_idx = max(mapped)
+            return [mapped.get(i) for i in range(max_idx + 1)]
+        if not isinstance(crop_bbox, (list, tuple)):
+            crop_bbox = [crop_bbox]
+        entries = []
+        for item in crop_bbox:
+            entries.append(self._normalize_crop_value(item))
+        return entries
+
+    def _normalize_crop_bbox_list(self, crop_bbox, num_images: int) -> Optional[List[Optional[List[float]]]]:
+        if crop_bbox is None or num_images == 0:
+            return None
+        entries = self._convert_crop_bbox_entries(crop_bbox)
+        if not entries:
+            return None
+        if len(entries) < num_images:
+            entries.extend([None] * (num_images - len(entries)))
+        elif len(entries) > num_images:
+            entries = entries[:num_images]
+        return entries
+
+    def _load_image(self, image, load_images: bool):
+        image_obj = super()._load_image(image, load_images)
+        if not load_images or not isinstance(image_obj, Image.Image):
+            return image_obj
+        crop_values = getattr(self, '_crop_bbox_values', None)
+        crop_index = getattr(self, '_crop_bbox_index', 0)
+        bbox = None
+        if crop_values is not None and crop_index < len(crop_values):
+            bbox = crop_values[crop_index]
+        self._crop_bbox_index = crop_index + 1
+        if bbox is None:
+            return image_obj
+        return self._crop_image(image_obj, bbox)
+
+    @staticmethod
+    def _crop_image(image: Image.Image, bbox: List[float]) -> Image.Image:
+        if len(bbox) < 4:
+            return image
+        width, height = image.size
+        coords = [float(x) for x in bbox[:4]]
+        if all(0. <= x <= 1. for x in coords):
+            scale_x = width
+            scale_y = height
+        elif all(0. <= x <= 1000. for x in coords):
+            scale_x = width / 1000.
+            scale_y = height / 1000.
+        else:
+            scale_x = 1.
+            scale_y = 1.
+        left = coords[0] * scale_x
+        top = coords[1] * scale_y
+        right = coords[2] * scale_x
+        bottom = coords[3] * scale_y
+        left, right = sorted((left, right))
+        top, bottom = sorted((top, bottom))
+        left = max(0., min(left, width))
+        right = max(0., min(right, width))
+        top = max(0., min(top, height))
+        bottom = max(0., min(bottom, height))
+        if right - left < 1 or bottom - top < 1:
+            return image
+        box = (int(round(left)), int(round(top)), int(round(right)), int(round(bottom)))
+        if box[2] <= box[0] or box[3] <= box[1]:
+            return image
+        return image.crop(box)
+
+
+register_template(QwenTemplateMeta(MLLMTemplateType.qwen2_5_vl_ocl, template_cls=Qwen2_5VLOclTemplate))
+
+
 class Qwen3VLTemplate(Qwen2VLTemplate):
     version = 'v3'
 
